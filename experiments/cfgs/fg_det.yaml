@@ -1,4 +1,4 @@
-tracktor:
+fg_detector:
   name: Tracktor++
   # Subfolder name in output/tracker/
   module_name: MOT17
