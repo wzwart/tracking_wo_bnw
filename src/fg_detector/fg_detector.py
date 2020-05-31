@@ -143,8 +143,7 @@ class FGDetector:
             positions.append(np.argmax(all_corr)-self.length//4)
         return positions
 
-
-    def calc_positions2(self,grid_points, axis):
+    def calc_positions2(self, grid_points, axis):
         num_frames = len(self.data_loader)
         series = np.zeros((num_frames, self.n_best, 2, 3, self.length))
         for i, frame in enumerate(self.data_loader):
@@ -157,32 +156,135 @@ class FGDetector:
             for gp_idx in range(self.n_best):
                 if axis == 0:
                     grid_point = np.asarray(grid_points[0][gp_idx], dtype=np.int)
-                    series[i, gp_idx, 0, :, :] = img_np[:, grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
-                                                    grid_point[1]].reshape(3, self.length)
+                    series[i, gp_idx, 0, :, :] = img_np[:,
+                                                 grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                                 grid_point[1]].reshape(3, self.length)
                 elif axis == 1:
                     grid_point = np.asarray(grid_points[1][gp_idx], dtype=np.int)
                     series[i, gp_idx, 1, :, :] = img_np[:, grid_point[0],
-                                                    grid_point[1] - self.length // 2:grid_point[1] + self.length // 2].reshape(3,
+                                                 grid_point[1] - self.length // 2:grid_point[
+                                                                                      1] + self.length // 2].reshape(3,
                                                                                                                      self.length)
-            ref_image= first_image
-            ref_series=np.zeros((self.n_best,2,3,self.length))
+            ref_image = first_image
+            ref_series = np.zeros((self.n_best, 2, 3, self.length))
             for gp_idx in range(self.n_best):
-                grid_point=np.asarray(grid_points[axis][gp_idx],dtype=np.int)
-                if axis==0:
-                    ref_series[gp_idx,axis,:,:]=ref_image[:,grid_point[0]-self.length//2:grid_point[0]+self.length//2,grid_point[1]].reshape(3,self.length)
-                elif axis==1:
-                    ref_series[gp_idx,axis,:,:]=ref_image[:,grid_point[0],grid_point[1]-self.length//2:grid_point[1]+self.length//2].reshape(3,self.length)
+                grid_point = np.asarray(grid_points[axis][gp_idx], dtype=np.int)
+                if axis == 0:
+                    ref_series[gp_idx, axis, :, :] = ref_image[:,
+                                                     grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                                     grid_point[1]].reshape(3, self.length)
+                elif axis == 1:
+                    ref_series[gp_idx, axis, :, :] = ref_image[:, grid_point[0],
+                                                     grid_point[1] - self.length // 2:grid_point[
+                                                                                          1] + self.length // 2].reshape(
+                        3, self.length)
 
-        cross_corr=np.zeros((num_frames,self.n_best,2,3,2*self.length//4))
+        cross_corr = np.zeros((num_frames, self.n_best, 2, 3, 2 * self.length // 4))
         positions = []
         for frame_id in range(num_frames):
-            for gp_idx in range(len (grid_points[axis])):
+            for gp_idx in range(len(grid_points[axis])):
                 for c in range(3):
-                    a=my_corr(ref_series[gp_idx,axis,c,:],series[frame_id,gp_idx,axis,c,:] )
-                    cross_corr[frame_id,gp_idx,axis,c]= a
-            all_corr=np.sum(cross_corr[frame_id,:,axis,:],axis=(0,1))
-            positions.append(np.argmax(all_corr)-self.length//4)
+                    a = my_corr(ref_series[gp_idx, axis, c, :], series[frame_id, gp_idx, axis, c, :])
+                    cross_corr[frame_id, gp_idx, axis, c] = a
+            all_corr = np.sum(cross_corr[frame_id, :, axis, :], axis=(0, 1))
+            positions.append(np.argmax(all_corr) - self.length // 4)
         return positions
+
+    def calc_positions3(self, grid_points):
+        num_frames = len(self.data_loader)
+        series = np.zeros((num_frames, self.n_best, 2, 3, self.length))
+
+
+        ref_series = np.zeros((self.n_best, 2, 3, self.length))
+
+        cross_corr=np.zeros((num_frames,self.n_best,2,3,2*self.length//4))
+        positions_2d=[]
+
+        for i, frame in enumerate(self.data_loader):
+            img = (255 * frame['img'])
+            img = img.type(torch.uint8)
+            img_np = img.numpy().astype(np.int16)
+            img_np = img_np.reshape(3, self.height, self.width)
+            if i == 0:
+                first_image = img_np
+                ref_image = first_image
+            for gp_idx in range(self.n_best):
+                for axis in [0,1]:
+                    grid_point = np.asarray(grid_points[0][gp_idx], dtype=np.int)
+                    if axis==0:
+                        series[i, gp_idx, 0, :, :] = img_np[:, grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                                        grid_point[1]].reshape(3, self.length)
+                        ref_series[gp_idx,0,:,:]=ref_image[:,grid_point[0]-self.length//2:grid_point[0]+self.length//2,grid_point[1]].reshape(3,self.length)
+
+                    if axis==1:
+
+                        series[i, gp_idx, 1, :, :] = img_np[:, grid_point[0],
+                                                        grid_point[1] - self.length // 2:grid_point[1] + self.length // 2].reshape(3,
+                                                                                                                             self.length)
+                        ref_series[gp_idx,1,:,:]=ref_image[:,grid_point[0],grid_point[1]-self.length//2:grid_point[1]+self.length//2].reshape(3,self.length)
+
+        for frame_id in range(num_frames):
+            positions_1d = []
+            for axis in [0, 1]:
+                for gp_idx in range(len (grid_points[axis])):
+                    for c in range(3):
+                        a=my_corr(ref_series[gp_idx, axis, c, :], series[frame_id, gp_idx, axis, c, :])
+                        cross_corr[frame_id, gp_idx, axis, c]= a
+                all_corr=np.sum(cross_corr[frame_id,:, axis, :], axis=(0, 1))
+                positions_1d.append(np.argmax(all_corr)-self.length//4)
+            positions_2d.append(positions_1d)
+        return np.asarray(positions_2d).T
+
+
+    def calc_positions4(self, grid_points, axis):
+        num_frames = len(self.data_loader)
+        series = np.zeros((num_frames, self.n_best, 2, 3, self.length))
+        for i, frame in enumerate(self.data_loader):
+            img = (255 * frame['img'])
+            img = img.type(torch.uint8)
+            img_np = img.numpy().astype(np.int16)
+            img_np = img_np.reshape(3, self.height, self.width)
+            if i == 0:
+                first_image = img_np
+                ref_image = first_image
+                ref_series = np.zeros((self.n_best, 2, 3, self.length))
+            for gp_idx in range(self.n_best):
+                if axis == 0:
+                    grid_point = np.asarray(grid_points[0][gp_idx], dtype=np.int)
+                    series[i, gp_idx, 0, :, :] = img_np[:,
+                                                 grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                                 grid_point[1]].reshape(3, self.length)
+                elif axis == 1:
+                    grid_point = np.asarray(grid_points[1][gp_idx], dtype=np.int)
+                    series[i, gp_idx, 1, :, :] = img_np[:, grid_point[0],
+                                                 grid_point[1] - self.length // 2:grid_point[
+                                                                                      1] + self.length // 2].reshape(3,
+                                                                                                                     self.length)
+
+            for gp_idx in range(self.n_best):
+                grid_point = np.asarray(grid_points[axis][gp_idx], dtype=np.int)
+                if axis == 0:
+                    ref_series[gp_idx, axis, :, :] = ref_image[:,
+                                                     grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                                     grid_point[1]].reshape(3, self.length)
+                elif axis == 1:
+                    ref_series[gp_idx, axis, :, :] = ref_image[:, grid_point[0],
+                                                     grid_point[1] - self.length // 2:grid_point[
+                                                                                          1] + self.length // 2].reshape(
+                        3, self.length)
+
+        cross_corr = np.zeros((num_frames, self.n_best, 2, 3, 2 * self.length // 4))
+        positions = []
+        for frame_id in range(num_frames):
+            for gp_idx in range(len(grid_points[axis])):
+                for c in range(3):
+                    a = my_corr(ref_series[gp_idx, axis, c, :], series[frame_id, gp_idx, axis, c, :])
+                    cross_corr[frame_id, gp_idx, axis, c] = a
+            all_corr = np.sum(cross_corr[frame_id, :, axis, :], axis=(0, 1))
+            positions.append(np.argmax(all_corr) - self.length // 4)
+        print("a")
+        return positions
+
 
 @ex.automain
 def main(fg_detector, _config, _log, _run):
