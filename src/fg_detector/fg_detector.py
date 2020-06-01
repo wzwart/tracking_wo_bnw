@@ -58,9 +58,16 @@ def add2histograms(img_np,all_histograms): # Function is compiled and runs in ma
                 all_histograms[val,c,y,x]+=1
     return all_histograms
 
+def im2show(img):
+    return np.swapaxes(np.swapaxes(img, 0, 2),1,0)
+
 
 @jit(int16[:,:,:,:](int16[:,:,:,:],int32))
 def find_bg(all_histograms, color_scale_factor): # Function is compiled and runs in machine code
+    '''
+    calculates the BG of the
+    '''
+
     height=all_histograms.shape[2]
     width=all_histograms.shape[3]
     bg=np.zeros((2,3,height,width),dtype=np.int16)
@@ -72,6 +79,13 @@ def find_bg(all_histograms, color_scale_factor): # Function is compiled and runs
                 bg[1,c,y,x]= all_histograms[arg,c,y,x]
     return bg
 
+def frame_to_np_img(frame, color_scale_factor=1):
+    img = ((256 // color_scale_factor - 1) * frame['img'])
+    img = img.type(torch.uint8)
+    return img.numpy().astype(np.int16)[0]
+
+
+
 class FGDetector:
     def __init__(self, fgdet_cfg, seq):
         self.frame_interval=fgdet_cfg['frame_interval']
@@ -79,8 +93,11 @@ class FGDetector:
         self.grid=fgdet_cfg['grid']
         self.n_best=fgdet_cfg['n_best']
         self.length=fgdet_cfg['length']
-        self.color_scale_factor=fgdet_cfg['color_scale_factor'
-        ]
+        self.color_scale_factor=fgdet_cfg['color_scale_factor']
+        self.fg_delta_mu=fgdet_cfg['fg_delta_mu']
+        self.fg_delta_sigma=fgdet_cfg['fg_delta_sigma']
+        self.color_scale_factor=fgdet_cfg['color_scale_factor']
+
         self.sub_sampled_seq = [seq[i] for i in range(len(seq)) if i % self.frame_interval == 0]
         self.data_loader = DataLoader(self.sub_sampled_seq, batch_size=1, shuffle=False)
         return
@@ -89,25 +106,25 @@ class FGDetector:
 
         self.average_imaged = None
         for i, frame in enumerate(self.data_loader):
-            img = frame['img']
+
             if self.average_imaged is None:
+                img = frame['img']
                 self.height = img.shape[2]
                 self.width = img.shape[3]
                 self.average_imaged = np.zeros((3, self.height, self.width), dtype=np.int16)
-            img = 255 * img
-            img = img.type(torch.uint8)
-            img_np = img.numpy().astype(np.int16)
+            img_np = frame_to_np_img(frame)
+
             if positions is None:
-                self.average_imaged += img_np[0]
+                self.average_imaged += img_np
             else:
-                self.average_imaged += offset_image(img_np[0],np.array(positions[i]))
+                self.average_imaged += offset_image(img_np,np.array(positions[i]))
         self.average_imaged=self.average_imaged//len(self.data_loader)
         return self.average_imaged
 
 
 
     def calc_grid_points(self):
-        grid_points = [[], []]
+        self.grid_points = [[], []]
         for axis in [0,1]:
             x = np.arange(-self.sigma * 3, self.sigma * 3)
             weights = (1 / (np.sqrt(2 * np.pi) * self.sigma) * np.exp(-0.5 * ((x / self.sigma) ** 2)))
@@ -122,83 +139,90 @@ class FGDetector:
                     amax = np.unravel_index(np.argmax(subset), subset.shape)
                     max = subset[amax]
                     if axis == 0 and self.length // 2 <= amax[0] + y_grid <= self.height - self.length // 2:
-                        grid_points[0].append([amax[0] + y_grid, amax[1] + x_grid, max])
+                        self.grid_points[0].append([amax[0] + y_grid, amax[1] + x_grid, max])
                     elif axis == 1 and self.length // 2 <= amax[1] <= self.width - self.length // 2:
-                        grid_points[1].append([amax[0] + y_grid, amax[1] + x_grid, max])
-            df = pd.DataFrame(np.array(grid_points[axis]))
+                        self.grid_points[1].append([amax[0] + y_grid, amax[1] + x_grid, max])
+            df = pd.DataFrame(np.array(self.grid_points[axis]))
             df = df.sort_values(by=[2], ascending=False)
-            grid_points[axis] = df.iloc[:self.n_best].to_numpy()
-        return grid_points
+            self.grid_points[axis] = df.iloc[:self.n_best].to_numpy()
 
-    def calc_positions(self, grid_points):
-        num_frames = len(self.data_loader)
-        series = np.zeros((num_frames, self.n_best, 2, 3, self.length))
+        return self.grid_points
+
+    def calc_positions(self):
         positions_2d=[]
-
         for frame_id, frame in enumerate(self.data_loader):
-            img = (255 * frame['img'])
-            img = img.type(torch.uint8)
-            img_np = img.numpy().astype(np.int16)
-            img_np = img_np.reshape(3, self.height, self.width)
-            cross_corr = np.zeros((num_frames, self.n_best, 2, 3, 2 * self.length // 4))
-
             if frame_id == 0:
-                first_image = img_np
-                ref_image = first_image
-                ref_series = np.zeros(( 2, 3, self.length))
-
-            for gp_idx in range(self.n_best): # loop over all grind points
-                for axis in [0,1]: #loop over x and y axis
-                    if axis == 0:
-
-
-                        grid_point = np.asarray(grid_points[0][gp_idx], dtype=np.int)
-
-                        ref_series[0, :, :] = ref_image[:,
-                                              grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
-                                              grid_point[1]].reshape(3, self.length)
-                        series[frame_id, gp_idx, 0, :, :] = img_np[:,
-                                                     grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
-                                                     grid_point[1]].reshape(3, self.length)
-                    elif axis == 1:
-                        grid_point = np.asarray(grid_points[1][gp_idx], dtype=np.int)
-
-                        ref_series[1, :, :] = ref_image[:, grid_point[0],
-                                              grid_point[1] - self.length // 2:grid_point[
-                                                                                   1] + self.length // 2].reshape(3,
-                                                                                                                  self.length)
-                        series[frame_id, gp_idx, 1, :, :] = img_np[:, grid_point[0],
-                                                     grid_point[1] - self.length // 2:grid_point[
-                                                                                          1] + self.length // 2].reshape(3,
-                                                                                                                         self.length)
-                    for c in range(3):
-                        a = cross_correlate(ref_series[axis, c, :], series[frame_id, gp_idx, axis, c, :])
-                        cross_corr[frame_id, gp_idx, axis, c] = a
-            all_corr = np.sum(cross_corr[frame_id, :, :, :], axis=(0, 2))
-            position_2d=np.argmax(all_corr,axis=1) - self.length // 4
+                self.ref_image = frame_to_np_img(frame)
+            position_2d=self.calc_position(frame)
             positions_2d.append(position_2d)
-            self.positions=positions_2d
-        return np.asarray(positions_2d)
+        self.positions=np.array(positions_2d)
+        return self.positions
+
+    def calc_position(self, frame):
+
+        ref_series = np.zeros((2, 3, self.length))
+        series = np.zeros((self.n_best, 2, 3, self.length))
+        img_np = frame_to_np_img(frame)
+        cross_corr = np.zeros(( self.n_best, 2, 3, 2 * self.length // 4))
+
+        for gp_idx in range(self.n_best): # loop over all grind points
+            for axis in [0,1]: #loop over x and y axis
+                if axis == 0:
+
+                    grid_point = np.asarray(self.grid_points[0][gp_idx], dtype=np.int)
+
+                    ref_series[0, :, :] = self.ref_image[:,
+                                          grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                          grid_point[1]].reshape(3, self.length)
+                    series[ gp_idx, 0, :, :] = img_np[:,
+                                                 grid_point[0] - self.length // 2:grid_point[0] + self.length // 2,
+                                                 grid_point[1]].reshape(3, self.length)
+                elif axis == 1:
+                    grid_point = np.asarray(self.grid_points[1][gp_idx], dtype=np.int)
+
+                    ref_series[1, :, :] = self.ref_image[:, grid_point[0],
+                                          grid_point[1] - self.length // 2:grid_point[
+                                                                               1] + self.length // 2].reshape(3,
+                                                                                                              self.length)
+                    series[ gp_idx, 1, :, :] = img_np[:, grid_point[0],
+                                                 grid_point[1] - self.length // 2:grid_point[
+                                                                                      1] + self.length // 2].reshape(3,
+                                                                                                                     self.length)
+                for c in range(3):
+                    a = cross_correlate(ref_series[axis, c, :], series[ gp_idx, axis, c, :])
+                    cross_corr[ gp_idx, axis, c] = a
+        all_corr = np.sum(cross_corr[ :, :, :], axis=(0, 2))
+        position_2d=np.argmax(all_corr,axis=1) - self.length // 4
+        return position_2d
+
 
     def calc_histograms(self):
 
         self.all_histograms = np.zeros((256 // self.color_scale_factor, 3, self.height, self.width), dtype=np.int16)
-
         for i, frame in enumerate(self.data_loader):
-            img= frame['img']
-            assert img.shape[0]==1
-            assert img.shape[2]==self.height
-            assert img.shape[3]==self.width
-            img=((256//self.color_scale_factor-1)*img)
-            img=img.type(torch.uint8)
-            img_np=img.numpy().astype(np.int16)
-            img_np[0]=offset_image(img_np[0],np.array(self.positions[i]))
-            self.all_histograms=add2histograms(img_np[0],self.all_histograms)
-
+            x= frame_to_np_img(frame, self.color_scale_factor)
+            assert x.shape[1]==self.height
+            assert x.shape[2]==self.width
+            img_offset= offset_image(x,np.array(self.positions[i])).astype(np.int16)
+            self.all_histograms=add2histograms(img_offset,self.all_histograms)
 
     def calc_bg(self):
         self.bg = find_bg(self.all_histograms, self.color_scale_factor)
         return self.bg
+
+
+    def calc_fg(self,frame, motion_compensation=True):
+        x = frame_to_np_img(frame)
+        if motion_compensation:
+            position=self.calc_position(frame)
+        else:
+            position=[0,0]
+        img_offset = offset_image(x, np.array(position).astype(np.int16))
+        delta_bg = np.sum((img_offset - self.bg[0])**2,axis=0)
+        self.fg = 1 / (1 + np.exp(-(delta_bg - self.fg_delta_mu) / self.fg_delta_sigma**2))
+        return self.fg
+
+
 
 
 ex = Experiment()

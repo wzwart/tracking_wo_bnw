@@ -24,4 +24,10 @@ fg_detector:
   length: 40
   # compacting factor for creating histograms in RGB domain
   color_scale_factor: 4
+  # sigma to normalize expected spread in |foreground - background|^2 signal
+  fg_delta_sigma: 40
+  # mean to set middle  of expected spread in |foreground - background|^2 signal
+  fg_delta_mu: 600
+
+
 
