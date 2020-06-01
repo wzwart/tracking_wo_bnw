@@ -22,4 +22,6 @@ fg_detector:
   n_best: 10
   # length of sequence for cross correlation
   length: 40
+  # compacting factor for creating histograms in RGB domain
+  color_scale_factor: 4
 

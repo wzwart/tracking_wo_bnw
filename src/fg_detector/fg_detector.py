@@ -17,8 +17,6 @@ import numba
 from numba import int16, jit, int32
 import numpy as np
 import time
-from scipy.signal import correlate
-from scipy.ndimage import convolve1d
 
 from scipy.ndimage import convolve1d
 
@@ -26,7 +24,6 @@ from torch.utils.data import DataLoader
 
 from tracktor.datasets.factory import Datasets
 from tracktor.config import get_output_dir
-from torchvision.ops.boxes import clip_boxes_to_image, nms
 
 
 import yaml
@@ -35,11 +32,9 @@ import sacred
 from sacred import Experiment
 
 
-ex = Experiment()
-
-ex.add_config('experiments/cfgs/fg_det.yaml')
 
 def offset_image(image,pos):
+
     (_,height,width)= image.shape
     result=np.zeros(image.shape, dtype=np.int)
     result[:,max(0,pos[0]):min(height,height+pos[0]),max(0,pos[1]):min(width,width+pos[1])]=image[:,max(0,-pos[0]):min(height,height-pos[0]),max(0,-pos[1]):min(width,width-pos[1])]
@@ -52,6 +47,30 @@ def cross_correlate(a, b):
     res = [np.dot(a[i:i + 2 * mid] - mean_a, b[mid:mid * 3] - mean_b) for i in range(2 * mid)]
     return np.array(res)
 
+@jit(int16[:,:,:,:](int16[:,:,:],int16[:,:,:,:]))
+def add2histograms(img_np,all_histograms): # Function is compiled and runs in machine code
+    height=img_np.shape[1]
+    width=img_np.shape[2]
+    for x in range(width):
+        for y in range(height):
+            for c in range(3):
+                val = img_np[c,y,x]
+                all_histograms[val,c,y,x]+=1
+    return all_histograms
+
+
+@jit(int16[:,:,:,:](int16[:,:,:,:],int32))
+def find_bg(all_histograms, color_scale_factor): # Function is compiled and runs in machine code
+    height=all_histograms.shape[2]
+    width=all_histograms.shape[3]
+    bg=np.zeros((2,3,height,width),dtype=np.int16)
+    for x in range(width):
+        for y in range(height):
+            for c in range(3):
+                arg=np.argmax(all_histograms[:,c,y,x])
+                bg[0,c,y,x]= color_scale_factor * arg
+                bg[1,c,y,x]= all_histograms[arg,c,y,x]
+    return bg
 
 class FGDetector:
     def __init__(self, fgdet_cfg, seq):
@@ -60,11 +79,14 @@ class FGDetector:
         self.grid=fgdet_cfg['grid']
         self.n_best=fgdet_cfg['n_best']
         self.length=fgdet_cfg['length']
+        self.color_scale_factor=fgdet_cfg['color_scale_factor'
+        ]
         self.sub_sampled_seq = [seq[i] for i in range(len(seq)) if i % self.frame_interval == 0]
         self.data_loader = DataLoader(self.sub_sampled_seq, batch_size=1, shuffle=False)
         return
 
     def calc_average_image(self, positions=None):
+
         self.average_imaged = None
         for i, frame in enumerate(self.data_loader):
             img = frame['img']
@@ -155,7 +177,32 @@ class FGDetector:
             all_corr = np.sum(cross_corr[frame_id, :, :, :], axis=(0, 2))
             position_2d=np.argmax(all_corr,axis=1) - self.length // 4
             positions_2d.append(position_2d)
+            self.positions=positions_2d
         return np.asarray(positions_2d)
+
+    def calc_histograms(self):
+
+        self.all_histograms = np.zeros((256 // self.color_scale_factor, 3, self.height, self.width), dtype=np.int16)
+
+        for i, frame in enumerate(self.data_loader):
+            img= frame['img']
+            assert img.shape[0]==1
+            assert img.shape[2]==self.height
+            assert img.shape[3]==self.width
+            img=((256//self.color_scale_factor-1)*img)
+            img=img.type(torch.uint8)
+            img_np=img.numpy().astype(np.int16)
+            img_np[0]=offset_image(img_np[0],np.array(self.positions[i]))
+            self.all_histograms=add2histograms(img_np[0],self.all_histograms)
+
+
+    def calc_bg(self):
+        self.bg = find_bg(self.all_histograms, self.color_scale_factor)
+        return self.bg
+
+
+ex = Experiment()
+ex.add_config('experiments/cfgs/fg_det.yaml')
 
 @ex.automain
 def main(fg_detector, _config, _log, _run):
@@ -177,7 +224,7 @@ def main(fg_detector, _config, _log, _run):
     fg_det=FGDetector(fg_detector, dataset[3])
     fg_det.calc_average_image()
     grid_points= fg_det.calc_grid_points()
-    fg_det.cal_position(grid_points)
+    fg_det.calc_positions(grid_points)
 
 
 
